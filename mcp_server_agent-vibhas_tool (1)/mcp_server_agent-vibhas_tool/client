@@ -1,0 +1,76 @@
+import asyncio
+import os
+import logfire
+
+from dotenv import load_dotenv
+from openai import AsyncAzureOpenAI
+from typing import Union, List
+from dataclasses import dataclass, field
+
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai import Agent
+from pydantic_ai.mcp import MCPServerStdio
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.mcp import MCPServerStdio
+
+from anthropic.types import MessageParam, TextBlock, ToolUnionParam, ToolUseBlock
+
+from mcp import ClientSession, StdioServerParameters
+
+load_dotenv()
+
+# Can't authenticate with logfire in this environment, so commenting out
+# logfire.configure()
+# logfire.instrument_pydantic_ai()
+
+api_key = os.getenv("AZURE_OPENAI_API_KEY")
+endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+
+client = AsyncAzureOpenAI(
+    azure_endpoint=endpoint,
+    api_version=api_version,
+    api_key=api_key,
+)
+
+model = OpenAIModel(
+    deployment,  
+    provider=OpenAIProvider(openai_client=client),
+)
+
+server_params = StdioServerParameters(
+    command="python",
+    args=["./server.py"],
+    env=os.environ
+)
+server = MCPServerStdio(server_params, args=["--transport", "stdio"])
+agent = Agent(model=model, mcp_servers=[server])
+
+@dataclass
+class Chat:
+    messages: List[MessageParam] = field(default_factory=list)
+    system_prompt: str = "You are a helpful and friendly assistant. Always use the mcp-multi-tool-server to perform your tasks. Provide your thinking process in the response."
+    async def process_query(self, session: ClientSession, query: str) -> None:
+        response = await session.list_tools()
+        available_tools: list[ToolUnionParam] = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.inputSchema
+            }
+            for tool in response.tools
+        ]
+
+        response = await client.chat.completions.create(
+            model=model.model_name,
+            
+        )
+
+async def main():
+    async with agent.run_mcp_servers():
+        result = await agent.run("how many days in 10 weeks?")
+    print(result.output)
+
+if __name__ == "__main__":
+    asyncio.run(main())  
